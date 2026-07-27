@@ -1,0 +1,78 @@
+{
+  "name": "vite-deploy-continuity",
+  "version": "0.1.0",
+  "description": "Keep stale Vite sessions working across static deployments.",
+  "type": "module",
+  "sideEffects": false,
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./retention": {
+      "types": "./src/retention.d.ts",
+      "import": "./src/retention.js"
+    },
+    "./recovery": {
+      "types": "./src/recovery.d.ts",
+      "import": "./src/recovery.js"
+    },
+    "./static": {
+      "types": "./src/static.d.ts",
+      "import": "./src/static.js"
+    }
+  },
+  "bin": {
+    "vite-retain-assets": "bin/vite-retain-assets.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "docs",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "test:coverage": "node --experimental-test-coverage --test --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=95",
+    "lint": "node --check src/*.js bin/*.js test/*.js scripts/*.mjs",
+    "typecheck": "tsc --project tsconfig.json",
+    "package:lint": "publint",
+    "package:types": "node scripts/check-package-types.mjs",
+    "package:smoke": "node scripts/verify-package.mjs",
+    "check": "npm run lint && npm test",
+    "verify": "npm run lint && npm run typecheck && npm run test:coverage && npm run package:lint && npm run package:types && npm run package:smoke",
+    "prepublishOnly": "npm run verify"
+  },
+  "keywords": [
+    "vite",
+    "deployment",
+    "chunks",
+    "cache",
+    "dynamic-import"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "author": "seoulpro <lim@limsumin.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seoulpro/vite-deploy-continuity.git"
+  },
+  "bugs": {
+    "url": "https://github.com/seoulpro/vite-deploy-continuity/issues"
+  },
+  "homepage": "https://github.com/seoulpro/vite-deploy-continuity#readme",
+  "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
+    "@types/node": "24.10.1",
+    "publint": "0.3.22",
+    "typescript": "7.0.2"
+  },
+  "license": "MIT"
+}
