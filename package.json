@@ -39,7 +39,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "test:coverage": "node --experimental-test-coverage --test --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=95",
+    "test:coverage": "node --experimental-test-coverage --test --test-coverage-include=\"src/**/*.js\" --test-coverage-include=\"bin/**/*.js\" --test-coverage-lines=95 --test-coverage-branches=85 --test-coverage-functions=95",
     "lint": "node --check src/*.js bin/*.js test/*.js scripts/*.mjs",
     "typecheck": "tsc --project tsconfig.json",
     "package:lint": "publint",
