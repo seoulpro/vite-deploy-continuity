@@ -4,6 +4,80 @@
 multi-step deployment atomic. Use immutable, content-hashed asset URLs and
 serve HTML with `Cache-Control: no-cache`.
 
+## Adoption checklist
+
+Confirm the fit before wiring this into a pipeline:
+
+- [ ] Tabs stay open across deployments (long-lived SPA, dashboard, editor).
+- [ ] The build is code-split, so a live tab can request a not-yet-loaded chunk.
+- [ ] Deployments write in place and may delete or overwrite prior assets.
+- [ ] You control the asset store (filesystem or CDN) well enough to retain and
+      later prune old generations.
+- [ ] HTML is served with `Cache-Control: no-cache` and assets are immutable and
+      content-hashed.
+- [ ] Only one retention process runs per distribution directory.
+
+If most boxes are unchecked — for example an immutable per-deployment origin, a
+host that already keeps every referenced generation, or a pipeline that never
+deletes old assets — the package has little to add.
+
+## Choose retention settings
+
+`historyLimit` (`--history-limit`) bounds how many recent generations are
+protected, and `gracePeriodMs` (`--grace-hours`) sets the minimum file age
+before an unprotected asset becomes eligible for deletion. An asset survives if
+it is in a protected generation **or** younger than the grace window, so size
+both from measured values, not guesses:
+
+- **Open-tab duration.** Measure how long real sessions stay open (analytics or
+  a p95/p99 session length). Retention must outlast the tabs you intend to keep
+  working: a tab older than every retained generation falls back to one recovery
+  reload instead of loading in place.
+- **Deploy frequency.** `historyLimit` counts generations, not time, and it
+  includes the current snapshot: `5` protects the current generation plus four
+  prior ones. Its wall-clock reach is roughly the number of *prior* generations
+  times your deploy interval — about four intervals at a steady cadence, and
+  variable when deploys are irregular. Translate the coverage you need into a
+  generation count rather than assuming a fixed duration.
+- **Edge and browser cache lifetime.** Keep old assets at least as long as
+  caches may still hand out HTML that references them, so a cached page never
+  points at a pruned chunk.
+- **Rollback window.** Retain enough generations that rolling back to a previous
+  release still finds its assets present. If they were already pruned, restore
+  from the deployment artifact before republishing.
+- **Storage budget.** More generations and a longer grace window cost disk or
+  object storage. Pick the smallest window that satisfies the constraints above,
+  then round up for headroom.
+
+Treat the `--history-limit 5` and `--grace-hours 24` defaults as starting
+values, not a recommendation: validate them against your measured sessions,
+cache behavior, rollback needs, deploy cadence, and storage budget. Raise both
+for long sessions or frequent deploys; a lower grace window only makes sense
+when caches are short and sessions are brief.
+
+## Scope and boundaries
+
+- **Default deletion is narrow on purpose.** Only generated `.js` and `.css`
+  files are eligible for deletion. Other emitted asset types — images, fonts,
+  JSON, WebAssembly, source maps — are never pruned by default, so they can
+  accumulate. Removing them requires an explicitly reviewed custom
+  `assetPattern`; widen it deliberately and test it against a dry run, because
+  the pattern is the last guard against deleting a still-referenced file.
+- **One retention process per directory.** History writes are atomic, but the
+  package provides no cross-process lock. Serialize retention so two deploys do
+  not prune the same distribution directory at once.
+- **Service workers are a separate cache generation.** A service worker adds its
+  own precache and update lifecycle on top of HTTP caches. This package does not
+  manage service workers; stage and test the worker's update and skip-waiting
+  behavior as part of the application so it does not pin clients to assets this
+  package has pruned.
+- **`?v=` must identify immutable content.** The static cache helper treats a
+  request as immutable when the configured version parameter (`v` by default)
+  carries any non-empty value, sending `max-age=31536000, immutable`. Use it
+  only for a value that changes whenever the bytes change — a content hash or
+  build id — never for arbitrary request state such as a session or tracking
+  token, which would cache stale or wrong content for a year.
+
 ## Build
 
 Enable the Vite build manifest:

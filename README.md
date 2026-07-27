@@ -14,6 +14,46 @@ already deleted. A reliable response needs three cooperating layers:
 This package provides those layers without requiring a hosting vendor or web
 framework.
 
+## Is this for you?
+
+The three layers are most valuable when several of these hold:
+
+- browser tabs stay open long enough to outlive a deployment;
+- the app uses lazy routes or code splitting, so a live tab can request a chunk
+  it has not loaded yet;
+- deployments happen in place, replacing or pruning an existing asset directory
+  rather than publishing a brand-new immutable origin;
+- you control the filesystem or CDN storage, so old-asset retention is
+  something you can actually manage.
+
+Under those conditions the layers reinforce each other:
+
+- **ordinary stale clients keep working** by loading the chunks they still
+  reference from the retained prior generations;
+- **clients older than the retention window recover gracefully**: when a chunk
+  is finally gone, they reload at most once within the configured recovery
+  window instead of showing a broken screen;
+- **static delivery stays coherent**, serving fresh precompressed siblings with
+  matching cache and `Vary` headers so the recovery reload lands on assets that
+  are actually cacheable.
+
+Any one of these alone is a partial workaround; together they cover the common,
+the edge, and the delivery cases of the same version-skew problem.
+
+It may add little value if:
+
+- your host serves each deployment from an immutable, per-deployment origin, or
+  already retains every referenced generation for you;
+- pages are short-lived or not code-split, so a tab rarely outlives a deploy or
+  needs a chunk that changed;
+- your pipeline never deletes prior content-hashed assets, so the specific
+  failure this targets — a live tab requesting an old chunk that is already
+  gone — cannot happen (other forms of deployment skew may still exist).
+
+This reduces version-skew failures; it does not make a deployment atomic. See
+the [deployment guide](./docs/deployment.md) for an adoption checklist and help
+choosing retention settings.
+
 ## Install
 
 ```sh
