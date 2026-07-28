@@ -1,0 +1,79 @@
+name: Feature request
+description: Propose a change or addition to retention, recovery, or static serving.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement.
+
+        Security vulnerabilities do not belong here. Report them through
+        [private vulnerability reporting](https://github.com/seoulpro/vite-deploy-continuity/security/advisories/new)
+        and review the [security policy](https://github.com/seoulpro/vite-deploy-continuity/blob/main/SECURITY.md).
+
+        Please open an issue before changing deletion eligibility, reload-loop
+        protection, or cache-header defaults, as noted in
+        [CONTRIBUTING.md](https://github.com/seoulpro/vite-deploy-continuity/blob/main/CONTRIBUTING.md).
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What problem are you trying to solve, and in what deployment situation?
+    validations:
+      required: true
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Affected layer
+      description: Which part of the package would change?
+      options:
+        - Retention CLI / retainBuildAssets
+        - Cross-process retention lock
+        - Browser recovery
+        - Static serving (precompressed middleware, negotiation, caching)
+        - Types / declarations
+        - Documentation
+        - Other / spans several
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should the package do? Include the option, flag, or API surface you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed, including whether existing options or a custom `assetPattern`/`isVersioned` already cover this.
+    validations:
+      required: false
+  - type: textarea
+    id: safety
+    attributes:
+      label: Compatibility and safety impact
+      description: |
+        How would this affect the project's safety invariants? Address the ones
+        your proposal touches:
+        - deletion eligibility (current, retained, and unhashed assets stay protected);
+        - generation and grace-window retention;
+        - cross-process lock behavior;
+        - reload-loop protection (at most one reload per recovery window);
+        - static path containment;
+        - content negotiation and freshness;
+        - immutable-cache classification of versioned requests;
+        - the no-runtime-dependency, hosting-neutral scope.
+    validations:
+      required: true
+  - type: textarea
+    id: validation-plan
+    attributes:
+      label: Validation plan
+      description: |
+        How would the change be tested? Note the invariants and failure paths a
+        test would need to cover, and whether `npm run verify` or the browser
+        end-to-end suite would exercise it.
+    validations:
+      required: false

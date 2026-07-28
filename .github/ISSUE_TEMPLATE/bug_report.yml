@@ -1,0 +1,115 @@
+name: Bug report
+description: Report a defect in retention, browser recovery, or static serving.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **Do not report security vulnerabilities here.** Deletion outside the
+        assets directory, path traversal, unsafe content negotiation, cache-header
+        confusion, reload loops, or recovery triggered by unrelated errors are
+        security issues. Report them through
+        [private vulnerability reporting](https://github.com/seoulpro/vite-deploy-continuity/security/advisories/new)
+        and review the [security policy](https://github.com/seoulpro/vite-deploy-continuity/blob/main/SECURITY.md).
+
+        Please provide a minimal reproduction. Do not paste secrets, real
+        production paths, private URLs, or full production builds.
+  - type: input
+    id: package-version
+    attributes:
+      label: Package version
+      description: Output of `npm ls vite-deploy-continuity` (0.2.x is the current line).
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js version
+      description: Output of `node --version` (Node.js 22 or newer is supported).
+      placeholder: "v22.4.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Operating system and runtime context
+      description: OS, and the server or framework the helper runs under (for example Connect/Express, or a browser for recovery).
+      placeholder: "macOS 14 / Node 22, Express 4"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Which layer shows the defect?
+      options:
+        - Retention CLI / retainBuildAssets (deletion eligibility, dry run)
+        - Cross-process retention lock
+        - Browser recovery (dynamic-import reload, loop suppression)
+        - Static serving (path containment)
+        - Static serving (precompressed negotiation / freshness)
+        - Static serving (media type / cache-control classification)
+        - TypeScript declarations or types
+        - Documentation
+        - Other / not sure
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened, including any error message, `code`, or `onEvent` output. Redact sensitive data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Smallest steps that reproduce the problem. Prefer synthetic filenames
+        and a trimmed manifest over real assets. For static or recovery issues,
+        include the exact request path or the chunk-load error, not a full build.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Relevant options and manifest or request details
+      description: |
+        Options you passed (for example `historyLimit`, `gracePeriodMs`,
+        `assetPreset`, `assetPattern`, `versionPattern`, `isVersioned`,
+        `cacheControl`) and, where they matter, a minimal manifest excerpt or the
+        request line and response headers. Remove secrets and private paths.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation results
+      description: |
+        What you have already run, for example `npm run verify`, a
+        `vite-retain-assets --dry-run` preview, or the browser end-to-end suite
+        (`npx playwright install chromium` then `npm run test:e2e`), and what it
+        showed.
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: This is not a security vulnerability (I would report those privately, not here).
+          required: true
+        - label: This report contains no secrets, private URLs, real production paths, or full production builds.
+          required: true
