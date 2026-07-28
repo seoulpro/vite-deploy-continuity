@@ -164,6 +164,53 @@ test("uses immutable caching only for versioned URLs", () => {
   );
 });
 
+test("supports explicit immutable-version validation", () => {
+  const versionPattern = /^[a-f0-9]{8}$/gu;
+  versionPattern.lastIndex = 3;
+  assert.match(
+    cacheControlForRequest("/asset.js?v=deadbeef", { versionPattern }),
+    /immutable/u,
+  );
+  assert.doesNotMatch(
+    cacheControlForRequest("/asset.js?v=session", { versionPattern }),
+    /immutable/u,
+  );
+  assert.equal(versionPattern.lastIndex, 3);
+
+  let receivedUrl;
+  assert.match(
+    cacheControlForRequest("/assets/app-12345678.js?release=42", {
+      isVersioned: (url) => {
+        receivedUrl = url;
+        return /-[A-Za-z0-9_-]{8,}\.js$/u.test(url.pathname);
+      },
+    }),
+    /immutable/u,
+  );
+  assert.equal(receivedUrl.pathname, "/assets/app-12345678.js");
+  assert.throws(
+    () => cacheControlForRequest("/asset.js", {
+      versionPattern: /./u,
+      isVersioned: () => true,
+    }),
+    /mutually exclusive/u,
+  );
+  assert.throws(
+    () => cacheControlForRequest("/asset.js", { versionPattern: "hash" }),
+    /versionPattern/u,
+  );
+  assert.throws(
+    () => cacheControlForRequest("/asset.js", { isVersioned: true }),
+    /isVersioned must be a function/u,
+  );
+  assert.throws(
+    () => cacheControlForRequest("/asset.js", {
+      isVersioned: () => "yes",
+    }),
+    /return a boolean/u,
+  );
+});
+
 test("leaves byte-range requests to the downstream static server", async () => {
   let continued = false;
   const response = {
@@ -314,6 +361,12 @@ test("validates middleware options", () => {
     }),
     /policies must be strings/,
   );
+  assert.doesNotThrow(
+    () => createPrecompressedMiddleware({
+      rootDirectory: "/tmp",
+      cacheControl: { isVersioned: () => true },
+    }),
+  );
 });
 
 test("rewrites common Vite assets with their original media type", async () => {
@@ -347,6 +400,37 @@ test("rewrites common Vite assets with their original media type", async () => {
   assert.equal(headers.get("content-type"), "text/javascript; charset=utf-8");
   assert.match(headers.get("cache-control"), /immutable/);
   assert.equal(headers.get("vary"), "Accept-Encoding");
+});
+
+test("evaluates immutable predicates against the original request URL", async () => {
+  const root = await makeTemporaryDirectory("precompressed-versioned-");
+  const original = path.join(root, "app-12345678.js");
+  await fs.writeFile(original, "source");
+  await fs.writeFile(`${original}.br`, "brotli");
+  const headers = new Map();
+  const request = {
+    method: "GET",
+    url: "/app-12345678.js",
+    headers: { "accept-encoding": "br" },
+  };
+
+  await createPrecompressedMiddleware({
+    rootDirectory: root,
+    cacheControl: {
+      isVersioned: (url) => url.pathname.endsWith(".js"),
+    },
+  })(
+    request,
+    {
+      getHeader: (name) => headers.get(name.toLowerCase()),
+      setHeader: (name, value) => headers.set(name.toLowerCase(), value),
+      end: () => {},
+    },
+    () => {},
+  );
+
+  assert.equal(request.url, "/app-12345678.js.br");
+  assert.match(headers.get("cache-control"), /immutable/u);
 });
 
 test("supports custom extensions and media types", async () => {

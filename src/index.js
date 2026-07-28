@@ -1,5 +1,6 @@
 export {
   collectManifestAssets,
+  RetentionLockError,
   retainBuildAssets,
 } from "./retention.js";
 export {

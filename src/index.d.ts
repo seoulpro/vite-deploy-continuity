@@ -1,8 +1,17 @@
 export {
   collectManifestAssets,
+  RetentionLockError,
   retainBuildAssets,
+  type RetainedGeneration,
   type RetainBuildAssetsOptions,
   type RetainBuildAssetsResult,
+  type RetentionAssetPolicy,
+  type RetentionAssetPreset,
+  type RetentionAssetRemovedEvent,
+  type RetentionCompletedEvent,
+  type RetentionEvent,
+  type RetentionLockEvent,
+  type RetentionPlannedEvent,
   type ViteManifest,
   type ViteManifestEntry,
 } from "./retention.js";
@@ -13,10 +22,14 @@ export {
   isDynamicImportFailure,
   wrapDynamicImport,
   type RecoveryController,
+  type RecoveryEvent,
   type RecoveryHistoryLike,
   type RecoveryLocationLike,
   type RecoveryOptions,
+  type RecoveryQueryClearedEvent,
+  type RecoveryReloadEvent,
   type RecoveryStorageLike,
+  type RecoverySuppressedEvent,
   type RecoveryWindowLike,
 } from "./recovery.js";
 

@@ -15,6 +15,8 @@ export interface CacheControlOptions {
   versionParameter?: string;
   versioned?: string;
   unversioned?: string;
+  versionPattern?: RegExp;
+  isVersioned?: (url: URL) => boolean;
 }
 
 export interface StaticRequestLike {

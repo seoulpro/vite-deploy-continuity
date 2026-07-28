@@ -169,26 +169,71 @@ export const findFreshPrecompressedVariant = async ({
   return null;
 };
 
-export const cacheControlForRequest = (
-  requestUrl,
-  {
-    versionParameter = "v",
-    versioned = "public, max-age=31536000, immutable",
-    unversioned = "public, max-age=300",
-  } = {},
-) => {
+const validateCacheControlOptions = ({
+  versionParameter = "v",
+  versioned = "public, max-age=31536000, immutable",
+  unversioned = "public, max-age=300",
+  versionPattern,
+  isVersioned,
+} = {}) => {
   if (typeof versionParameter !== "string" || versionParameter.length === 0) {
     throw new TypeError("versionParameter must be a non-empty string");
   }
   if (typeof versioned !== "string" || typeof unversioned !== "string") {
     throw new TypeError("cache-control policies must be strings");
   }
+  if (versionPattern !== undefined && !(versionPattern instanceof RegExp)) {
+    throw new TypeError("versionPattern must be a regular expression");
+  }
+  if (isVersioned !== undefined && typeof isVersioned !== "function") {
+    throw new TypeError("isVersioned must be a function");
+  }
+  if (versionPattern !== undefined && isVersioned !== undefined) {
+    throw new TypeError("versionPattern and isVersioned are mutually exclusive");
+  }
+  return {
+    versionParameter,
+    versioned,
+    unversioned,
+    versionPattern,
+    isVersioned,
+  };
+};
+
+export const cacheControlForRequest = (
+  requestUrl,
+  options = {},
+) => {
+  const {
+    versionParameter,
+    versioned,
+    unversioned,
+    versionPattern,
+    isVersioned,
+  } = validateCacheControlOptions(options);
   const url = new URL(requestUrl, "https://continuity.invalid");
-  return url.searchParams
-    .getAll(versionParameter)
-    .some((value) => value.length > 0)
-    ? versioned
-    : unversioned;
+  let resolvedVersioned;
+  if (isVersioned) {
+    resolvedVersioned = isVersioned(url);
+    if (typeof resolvedVersioned !== "boolean") {
+      throw new TypeError("isVersioned must return a boolean");
+    }
+  } else {
+    resolvedVersioned = url.searchParams
+      .getAll(versionParameter)
+      .some((value) => {
+        if (value.length === 0) return false;
+        if (!versionPattern) return true;
+        const previousLastIndex = versionPattern.lastIndex;
+        try {
+          versionPattern.lastIndex = 0;
+          return versionPattern.test(value);
+        } finally {
+          versionPattern.lastIndex = previousLastIndex;
+        }
+      });
+  }
+  return resolvedVersioned ? versioned : unversioned;
 };
 
 /**
@@ -254,7 +299,7 @@ export const createPrecompressedMiddleware = (options = {}) => {
     throw new TypeError("cacheControl must be an object");
   }
   if (cacheControl !== undefined) {
-    cacheControlForRequest("/", cacheControl);
+    validateCacheControlOptions(cacheControl);
   }
   return async (request, response, next) => {
     try {
@@ -289,7 +334,10 @@ export const createPrecompressedMiddleware = (options = {}) => {
         ? contentType?.(url.pathname)
         : null;
       const resolvedCacheControl = cacheControl
-        ? cacheControlForRequest(rewrittenUrl, cacheControl)
+        ? cacheControlForRequest(
+            `${url.pathname}${url.search}${url.hash}`,
+            cacheControl,
+          )
         : null;
       if (variant) {
         response.setHeader("Content-Encoding", variant.encoding);

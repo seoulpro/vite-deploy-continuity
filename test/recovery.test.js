@@ -48,6 +48,49 @@ test("reloads once for a stale dynamic import and prevents a loop", () => {
   assert.equal(windowObject.replacements.length, 1);
 });
 
+test("reports recovery, suppression, and query cleanup without blocking", () => {
+  const windowObject = makeWindow();
+  const events = [];
+  const controller = createRecoveryController({
+    windowObject,
+    now: () => 1_000,
+    onEvent: (event) => {
+      events.push(event);
+      throw new Error("telemetry unavailable");
+    },
+  });
+  const error = new TypeError("Failed to fetch dynamically imported module");
+
+  assert.equal(controller.recover(error), true);
+  assert.equal(controller.recover(error), false);
+  assert.equal(events[0].type, "reload");
+  assert.equal(events[0].attemptCount, 1);
+  assert.equal(events[0].error, error);
+  assert.match(events[0].reloadUrl, /__chunk_recovery=1000/u);
+  assert.deepEqual(events[1], {
+    type: "suppressed",
+    url: "https://example.test/dashboard?tab=one#chart",
+    attemptedAt: 1_000,
+    previousAttemptedAt: 1_000,
+    attemptCount: 1,
+    remainingMs: 60_000,
+    error,
+  });
+
+  const cleanupWindow = makeWindow();
+  cleanupWindow.location.href =
+    "https://example.test/dashboard?__chunk_recovery=1000";
+  const cleanupEvents = [];
+  createRecoveryController({
+    windowObject: cleanupWindow,
+    onEvent: (event) => cleanupEvents.push(event),
+  }).clearRecoveryQuery();
+  assert.deepEqual(cleanupEvents, [{
+    type: "query-cleared",
+    url: "https://example.test/dashboard",
+  }]);
+});
+
 test("uses the recovery URL marker when session storage is unavailable", () => {
   const firstWindow = makeWindow();
   firstWindow.sessionStorage.getItem = () => {
@@ -183,6 +226,13 @@ test("validates recovery options before installing listeners", () => {
       now: 1,
     }),
     /now must be a function/,
+  );
+  assert.throws(
+    () => createRecoveryController({
+      windowObject: makeWindow(),
+      onEvent: true,
+    }),
+    /onEvent must be a function/,
   );
   assert.throws(
     () => installViteRecovery([]),

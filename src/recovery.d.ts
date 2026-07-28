@@ -29,6 +29,35 @@ export interface RecoveryWindowLike {
   ): void;
 }
 
+export interface RecoveryReloadEvent {
+  type: "reload";
+  url: string;
+  reloadUrl: string;
+  attemptedAt: number;
+  attemptCount: number;
+  error: unknown;
+}
+
+export interface RecoverySuppressedEvent {
+  type: "suppressed";
+  url: string;
+  attemptedAt: number;
+  previousAttemptedAt: number;
+  attemptCount: number;
+  remainingMs: number;
+  error: unknown;
+}
+
+export interface RecoveryQueryClearedEvent {
+  type: "query-cleared";
+  url: string;
+}
+
+export type RecoveryEvent =
+  | RecoveryReloadEvent
+  | RecoverySuppressedEvent
+  | RecoveryQueryClearedEvent;
+
 export interface RecoveryOptions {
   windowObject?: RecoveryWindowLike;
   storageKey?: string;
@@ -36,6 +65,7 @@ export interface RecoveryOptions {
   ttlMs?: number;
   now?: () => number;
   patterns?: readonly string[];
+  onEvent?: (event: RecoveryEvent) => void;
 }
 
 export interface RecoveryController {

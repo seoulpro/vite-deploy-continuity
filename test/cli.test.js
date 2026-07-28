@@ -70,13 +70,18 @@ test("previews and applies retention for a custom Vite layout", async (t) => {
 
   const preview = run(...argumentsList, "--dry-run");
   assert.equal(preview.status, 0, preview.stderr);
-  assert.deepEqual(JSON.parse(preview.stdout), {
-    distDirectory: dist,
-    currentAssetCount: 1,
-    retainedHistoryCount: 1,
-    removable: ["static/expired-12345678.js"],
-    dryRun: true,
-  });
+  const previewResult = JSON.parse(preview.stdout);
+  assert.equal(previewResult.distDirectory, dist);
+  assert.equal(previewResult.currentAssetCount, 1);
+  assert.equal(previewResult.retainedHistoryCount, 1);
+  assert.equal(previewResult.retainedGenerations.length, 1);
+  assert.deepEqual(
+    previewResult.removable,
+    ["static/expired-12345678.js"],
+  );
+  assert.equal(previewResult.removableBytes, 3);
+  assert.equal(previewResult.assetPolicy, "code");
+  assert.equal(previewResult.dryRun, true);
   await fs.stat(expired);
   await assert.rejects(fs.stat(path.join(dist, ".history")));
 
@@ -95,4 +100,12 @@ test("rejects invalid numeric CLI values", () => {
   const invalidGrace = run("--grace-hours", "-1");
   assert.equal(invalidGrace.status, 1);
   assert.match(invalidGrace.stderr, /gracePeriodMs/);
+
+  const invalidPreset = run("--asset-preset", "everything");
+  assert.equal(invalidPreset.status, 1);
+  assert.match(invalidPreset.stderr, /assetPreset/);
+
+  const invalidLock = run("--lock-stale-minutes", "0");
+  assert.equal(invalidLock.status, 1);
+  assert.match(invalidLock.stderr, /lockStaleMs/);
 });

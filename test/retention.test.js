@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
+import { pathToFileURL } from "node:url";
 
 import {
   collectManifestAssets,
+  RetentionLockError,
   retainBuildAssets,
 } from "../src/index.js";
 
@@ -14,6 +18,18 @@ const makeTemporaryDirectory = async (prefix) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   temporaryDirectories.push(directory);
   return directory;
+};
+const waitForFile = async (file) => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await fs.stat(file);
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${file}`);
 };
 
 after(async () => {
@@ -98,6 +114,127 @@ test("dry-run performs no writes or deletions", async () => {
   assert.deepEqual(result.removable, ["assets/expired-12345678.js"]);
   await fs.stat(expired);
   await assert.rejects(fs.stat(path.join(root, ".asset-history")));
+});
+
+test("reports retention generations, bytes, ages, and lifecycle events", async () => {
+  const root = await makeTemporaryDirectory("vite-continuity-events-");
+  await fs.mkdir(path.join(root, ".vite"), { recursive: true });
+  await fs.mkdir(path.join(root, "assets"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".vite", "manifest.json"),
+    JSON.stringify({ entry: { file: "assets/current-12345678.js" } }),
+  );
+  await fs.writeFile(
+    path.join(root, "assets", "current-12345678.js"),
+    "current",
+  );
+  const expired = path.join(root, "assets", "expired-12345678.js");
+  await fs.writeFile(expired, "old-data");
+  await fs.utimes(expired, new Date(1_000), new Date(1_000));
+  const events = [];
+
+  const result = await retainBuildAssets({
+    distDirectory: root,
+    nowMs: 5_000,
+    gracePeriodMs: 0,
+    onEvent: (event) => {
+      events.push(event);
+      throw new Error("monitor unavailable");
+    },
+  });
+
+  assert.equal(result.removableBytes, 8);
+  assert.equal(result.oldestRemovableAgeMs, 4_000);
+  assert.equal(result.assetPolicy, "code");
+  assert.deepEqual(result.retainedGenerations, [{
+    historyFile: "0000000000005000.json",
+    createdAt: "1970-01-01T00:00:05.000Z",
+    ageMs: 0,
+    assetCount: 1,
+    current: true,
+  }]);
+  assert.deepEqual(events.map((event) => event.type), [
+    "lock-acquired",
+    "planned",
+    "asset-removed",
+    "completed",
+    "lock-released",
+  ]);
+  assert.equal(events[1].removableBytes, 8);
+  assert.equal(events[2].ageMs, 4_000);
+  assert.equal(events[3].removedBytes, 8);
+});
+
+test("offers an opt-in Vite asset preset without pruning manual files", async () => {
+  const root = await makeTemporaryDirectory("vite-continuity-preset-");
+  const assets = path.join(root, "assets");
+  await fs.mkdir(path.join(root, ".vite"), { recursive: true });
+  await fs.mkdir(assets, { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".vite", "manifest.json"),
+    JSON.stringify({ entry: { file: "assets/current-12345678.js" } }),
+  );
+  const names = [
+    "current-12345678.js",
+    "current-12345678.js.br",
+    "old-12345678.woff2",
+    "old-12345678.png",
+    "old-12345678.js.br",
+    "manual.png",
+  ];
+  for (const name of names) {
+    const file = path.join(assets, name);
+    await fs.writeFile(file, name);
+    await fs.utimes(file, new Date(0), new Date(0));
+  }
+
+  const codeOnly = await retainBuildAssets({
+    distDirectory: root,
+    nowMs: 2_000,
+    gracePeriodMs: 0,
+    dryRun: true,
+  });
+  assert.deepEqual(codeOnly.removable, []);
+
+  const viteAssets = await retainBuildAssets({
+    distDirectory: root,
+    nowMs: 2_000,
+    gracePeriodMs: 0,
+    assetPreset: "vite",
+    dryRun: true,
+  });
+  assert.deepEqual(viteAssets.removable, [
+    "assets/old-12345678.js.br",
+    "assets/old-12345678.png",
+    "assets/old-12345678.woff2",
+  ]);
+  assert.equal(viteAssets.assetPolicy, "vite");
+  assert.equal(viteAssets.removableBytes, (
+    "old-12345678.js.br".length
+    + "old-12345678.png".length
+    + "old-12345678.woff2".length
+  ));
+
+  await retainBuildAssets({
+    distDirectory: root,
+    nowMs: 2_000,
+    gracePeriodMs: 0,
+    assetPreset: "vite",
+  });
+  for (const name of [
+    "old-12345678.js.br",
+    "old-12345678.png",
+    "old-12345678.woff2",
+  ]) {
+    await assert.rejects(fs.stat(path.join(assets, name)));
+  }
+  for (const name of [
+    "current-12345678.js",
+    "current-12345678.js.br",
+    "manual.png",
+  ]) {
+    await fs.stat(path.join(assets, name));
+  }
 });
 
 test("rejects retention paths that escape the distribution root", async () => {
@@ -211,6 +348,119 @@ test("rejects invalid retention windows", async () => {
   await assert.rejects(
     retainBuildAssets({ distDirectory: ".", nowMs: -1 }),
     /Date range/,
+  );
+  await assert.rejects(
+    retainBuildAssets({ distDirectory: ".", assetPreset: "all" }),
+    /assetPreset/,
+  );
+  await assert.rejects(
+    retainBuildAssets({
+      distDirectory: ".",
+      assetPreset: "vite",
+      assetPattern: /./u,
+    }),
+    /mutually exclusive/,
+  );
+  await assert.rejects(
+    retainBuildAssets({ distDirectory: ".", lockStaleMs: 0 }),
+    /lockStaleMs/,
+  );
+  await assert.rejects(
+    retainBuildAssets({ distDirectory: ".", onEvent: true }),
+    /onEvent/,
+  );
+});
+
+test("prevents concurrent retention across processes", async () => {
+  const root = await makeTemporaryDirectory("vite-continuity-lock-");
+  const signal = path.join(root, "lock-ready");
+  await fs.mkdir(path.join(root, ".vite"), { recursive: true });
+  await fs.mkdir(path.join(root, "assets"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".vite", "manifest.json"),
+    JSON.stringify({ entry: { file: "assets/current-12345678.js" } }),
+  );
+  await fs.writeFile(
+    path.join(root, "assets", "current-12345678.js"),
+    "current",
+  );
+  const retentionModule = pathToFileURL(
+    path.resolve("src/retention.js"),
+  ).href;
+  const script = `
+    import fs from "node:fs";
+    import { retainBuildAssets } from ${JSON.stringify(retentionModule)};
+    await retainBuildAssets({
+      distDirectory: ${JSON.stringify(root)},
+      onEvent(event) {
+        if (event.type === "lock-acquired") {
+          fs.writeFileSync(${JSON.stringify(signal)}, "ready");
+          Atomics.wait(
+            new Int32Array(new SharedArrayBuffer(4)),
+            0,
+            0,
+            1000
+          );
+        }
+      }
+    });
+  `;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", script],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+
+  await waitForFile(signal);
+  await assert.rejects(
+    retainBuildAssets({ distDirectory: root }),
+    (error) => (
+      error instanceof RetentionLockError
+      && error.code === "ERR_RETENTION_LOCKED"
+      && error.lockPath.endsWith(".retention.lock")
+    ),
+  );
+
+  const [exitCode] = child.exitCode === null
+    ? await once(child, "exit")
+    : [child.exitCode];
+  assert.equal(exitCode, 0, stderr);
+  await assert.rejects(
+    fs.stat(path.join(root, ".asset-history", ".retention.lock")),
+  );
+});
+
+test("reclaims a stale regular-file retention lock", async () => {
+  const root = await makeTemporaryDirectory("vite-continuity-stale-lock-");
+  const history = path.join(root, ".asset-history");
+  const lockPath = path.join(history, ".retention.lock");
+  await fs.mkdir(path.join(root, ".vite"), { recursive: true });
+  await fs.mkdir(path.join(root, "assets"), { recursive: true });
+  await fs.mkdir(history);
+  await fs.writeFile(
+    path.join(root, ".vite", "manifest.json"),
+    JSON.stringify({ entry: { file: "assets/current-12345678.js" } }),
+  );
+  await fs.writeFile(
+    path.join(root, "assets", "current-12345678.js"),
+    "current",
+  );
+  await fs.writeFile(lockPath, "{\"token\":\"abandoned\"}\n");
+  await fs.utimes(lockPath, new Date(0), new Date(0));
+
+  await retainBuildAssets({
+    distDirectory: root,
+    lockStaleMs: 1,
+  });
+
+  await assert.rejects(fs.stat(lockPath));
+  assert.equal(
+    (await fs.readdir(history)).some((name) => name.endsWith(".stale")),
+    false,
   );
 });
 

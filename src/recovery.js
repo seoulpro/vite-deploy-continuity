@@ -50,6 +50,7 @@ export const createRecoveryController = (options = {}) => {
     "ttlMs",
     "now",
     "patterns",
+    "onEvent",
   ]);
   for (const name of Object.keys(options)) {
     if (!allowedOptions.has(name)) {
@@ -63,6 +64,7 @@ export const createRecoveryController = (options = {}) => {
     ttlMs = 60_000,
     now = () => Date.now(),
     patterns = DEFAULT_PATTERNS,
+    onEvent,
   } = options;
   if (!windowObject) throw new TypeError("a window-like object is required");
   if (typeof storageKey !== "string" || storageKey.length === 0) {
@@ -77,8 +79,18 @@ export const createRecoveryController = (options = {}) => {
   if (typeof now !== "function") {
     throw new TypeError("now must be a function");
   }
+  if (onEvent !== undefined && typeof onEvent !== "function") {
+    throw new TypeError("onEvent must be a function");
+  }
   assertPatterns(patterns);
 
+  const emit = (event) => {
+    try {
+      onEvent?.(Object.freeze(event));
+    } catch {
+      // Telemetry must never change recovery behavior.
+    }
+  };
   const normalizedUrl = () => {
     const url = new URL(windowObject.location.href);
     url.searchParams.delete(queryKey);
@@ -139,6 +151,10 @@ export const createRecoveryController = (options = {}) => {
       "",
       `${url.pathname}${url.search}${url.hash}`,
     );
+    emit({
+      type: "query-cleared",
+      url: url.toString(),
+    });
   };
 
   const recover = (error) => {
@@ -156,15 +172,33 @@ export const createRecoveryController = (options = {}) => {
       && previous.count >= 1
       && Math.abs(elapsedMs) < ttlMs
     ) {
+      emit({
+        type: "suppressed",
+        url,
+        attemptedAt: timestamp,
+        previousAttemptedAt: previous.attemptedAt,
+        attemptCount: previous.count,
+        remainingMs: Math.max(0, ttlMs - Math.abs(elapsedMs)),
+        error,
+      });
       return false;
     }
-    writeState({
+    const state = {
       url,
       attemptedAt: timestamp,
       count: previous?.url === url ? previous.count + 1 : 1,
-    });
+    };
+    writeState(state);
     const reloadUrl = new URL(url);
     reloadUrl.searchParams.set(queryKey, String(timestamp));
+    emit({
+      type: "reload",
+      url,
+      reloadUrl: reloadUrl.toString(),
+      attemptedAt: timestamp,
+      attemptCount: state.count,
+      error,
+    });
     windowObject.location.replace(reloadUrl.toString());
     return true;
   };

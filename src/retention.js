@@ -2,7 +2,12 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const DEFAULT_ASSET_PATTERN = /-[A-Za-z0-9_-]{8,}\.(?:css|js)$/;
+const ASSET_PATTERNS = Object.freeze({
+  code: /-[A-Za-z0-9_-]{8,}\.(?:css|js)$/,
+  vite: /-[A-Za-z0-9_-]{8,}\.(?:(?:css|js|mjs)(?:\.map)?|avif|bmp|eot|gif|ico|jpeg|jpg|json|map|mp3|mp4|ogg|otf|pdf|png|svg|ttf|txt|wasm|webm|webmanifest|webp|woff|woff2|xml)(?:\.(?:br|gz))?$/,
+});
+const ASSET_PRESETS = new Set(Object.keys(ASSET_PATTERNS));
+const DEFAULT_LOCK_STALE_MS = 60 * 60 * 1_000;
 const normalizePath = (value) => String(value ?? "").replace(/^\/+/, "");
 const readJson = async (filePath) => JSON.parse(await fs.readFile(filePath, "utf8"));
 const compareText = (left, right) => (
@@ -14,6 +19,15 @@ const historyName = (timestamp) => (
 const isPathInside = (root, candidate) => (
   candidate === root || candidate.startsWith(`${root}${path.sep}`)
 );
+
+export class RetentionLockError extends Error {
+  constructor(lockPath) {
+    super(`retention lock is already held: ${lockPath}`);
+    this.name = "RetentionLockError";
+    this.code = "ERR_RETENTION_LOCKED";
+    this.lockPath = lockPath;
+  }
+}
 
 const nearestExistingRealPath = async (candidate) => {
   let cursor = candidate;
@@ -88,8 +102,9 @@ const listHistoryNames = async (historyDirectory) => {
   }
 };
 
-const loadHistoryAssets = async (historyDirectory, names) => {
+const loadHistory = async (historyDirectory, names, nowMs) => {
   const assets = new Set();
+  const generations = [];
   for (const name of names) {
     const file = path.join(historyDirectory, name);
     const metadata = await fs.lstat(file);
@@ -104,11 +119,29 @@ const loadHistoryAssets = async (historyDirectory, names) => {
       throw new RangeError(`asset history resolves outside its directory: ${name}`);
     }
     const history = await readJson(realFile);
-    for (const asset of Array.isArray(history.assets) ? history.assets : []) {
+    const historyAssets = Array.isArray(history.assets) ? history.assets : [];
+    for (const asset of historyAssets) {
       assets.add(normalizePath(asset));
     }
+    const storedTimestamp = typeof history.createdAt === "string"
+      ? Date.parse(history.createdAt)
+      : Number.NaN;
+    const nameTimestamp = Number(name.slice(0, -".json".length));
+    const timestamp = Number.isFinite(storedTimestamp)
+      ? storedTimestamp
+      : nameTimestamp;
+    const validTimestamp = Number.isFinite(timestamp)
+      && timestamp >= 0
+      && timestamp <= 8_640_000_000_000_000;
+    generations.push({
+      historyFile: name,
+      createdAt: validTimestamp ? new Date(timestamp).toISOString() : null,
+      ageMs: validTimestamp ? Math.max(0, nowMs - timestamp) : null,
+      assetCount: historyAssets.length,
+      current: false,
+    });
   }
-  return assets;
+  return { assets, generations };
 };
 
 const nextHistoryName = (nowMs, existingNames) => {
@@ -185,7 +218,11 @@ const writeHistory = async ({
     );
     await fs.rename(temporary, file);
   } catch (error) {
-    await fs.rm(temporary, { force: true }).catch(() => {});
+    try {
+      await fs.rm(temporary, { force: true });
+    } catch {
+      // Preserve the original history write error.
+    }
     throw error;
   }
   return name;
@@ -213,6 +250,118 @@ const walkFiles = async (directory, relativeDirectory = "") => {
   return files;
 };
 
+const acquireRetentionLock = async ({
+  lockPath,
+  lockStaleMs,
+  realRoot,
+}) => {
+  const lockDirectory = path.dirname(lockPath);
+  await fs.mkdir(lockDirectory, { recursive: true });
+  const realLockDirectory = await fs.realpath(lockDirectory);
+  if (!isPathInside(realRoot, realLockDirectory)) {
+    throw new RangeError("lockPath resolves outside distDirectory");
+  }
+
+  const token = randomUUID();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    let handle;
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify({
+          token,
+          pid: process.pid,
+          createdAt: new Date().toISOString(),
+        })}\n`, "utf8");
+      } catch (error) {
+        try {
+          await handle.close();
+        } catch {
+          // Preserve the original lock write error.
+        }
+        try {
+          await fs.rm(lockPath, { force: true });
+        } catch {
+          // Preserve the original lock write error.
+        }
+        throw error;
+      }
+      await handle.close();
+      return {
+        lockPath,
+        release: async () => {
+          try {
+            const metadata = await fs.lstat(lockPath);
+            if (metadata.isSymbolicLink() || !metadata.isFile()) return;
+            const lock = await readJson(lockPath);
+            if (lock?.token === token) {
+              await fs.rm(lockPath, { force: true });
+            }
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        },
+      };
+    } catch (error) {
+      if (handle) {
+        try {
+          await handle.close();
+        } catch {
+          // Preserve the original lock acquisition error.
+        }
+      }
+      if (error?.code !== "EEXIST") throw error;
+
+      let metadata;
+      try {
+        metadata = await fs.lstat(lockPath);
+      } catch (statError) {
+        if (statError?.code === "ENOENT") continue;
+        throw statError;
+      }
+      if (metadata.isSymbolicLink() || !metadata.isFile()) {
+        throw new TypeError("retention lock must be a regular file");
+      }
+      if (Date.now() - metadata.mtimeMs <= lockStaleMs) {
+        throw new RetentionLockError(lockPath);
+      }
+
+      const stalePath = `${lockPath}.${randomUUID()}.stale`;
+      try {
+        await fs.rename(lockPath, stalePath);
+        await fs.rm(stalePath, { force: true });
+      } catch (renameError) {
+        if (
+          renameError?.code === "ENOENT"
+          || renameError?.code === "EEXIST"
+        ) {
+          continue;
+        }
+        throw renameError;
+      }
+    }
+  }
+  throw new RetentionLockError(lockPath);
+};
+
+const matchesAssetPattern = (assetPattern, value) => {
+  const previousLastIndex = assetPattern.lastIndex;
+  try {
+    assetPattern.lastIndex = 0;
+    return assetPattern.test(value);
+  } finally {
+    assetPattern.lastIndex = previousLastIndex;
+  }
+};
+
+const isProtectedAsset = (protectedAssets, asset) => (
+  protectedAssets.has(asset)
+  || (
+    (asset.endsWith(".br") || asset.endsWith(".gz"))
+    && protectedAssets.has(asset.slice(0, -3))
+  )
+);
+
 export const retainBuildAssets = async (options = {}) => {
   if (
     typeof options !== "object"
@@ -230,8 +379,13 @@ export const retainBuildAssets = async (options = {}) => {
     "historyLimit",
     "gracePeriodMs",
     "nowMs",
+    "assetPreset",
     "assetPattern",
     "dryRun",
+    "lock",
+    "lockPath",
+    "lockStaleMs",
+    "onEvent",
   ]);
   for (const name of Object.keys(options)) {
     if (!allowedOptions.has(name)) {
@@ -247,8 +401,13 @@ export const retainBuildAssets = async (options = {}) => {
     historyLimit = 5,
     gracePeriodMs = 24 * 60 * 60 * 1_000,
     nowMs = Date.now(),
-    assetPattern = DEFAULT_ASSET_PATTERN,
+    assetPreset = "code",
+    assetPattern,
     dryRun = false,
+    lock = true,
+    lockPath = path.join(historyDirectory, ".retention.lock"),
+    lockStaleMs = DEFAULT_LOCK_STALE_MS,
+    onEvent,
   } = options;
   if (!distDirectory) throw new TypeError("distDirectory is required");
   if (!Number.isInteger(historyLimit) || historyLimit < 1) {
@@ -263,12 +422,46 @@ export const retainBuildAssets = async (options = {}) => {
   if (nowMs < 0 || nowMs > 8_640_000_000_000_000) {
     throw new RangeError("nowMs must be within the JavaScript Date range");
   }
-  if (!(assetPattern instanceof RegExp)) {
+  if (!ASSET_PRESETS.has(assetPreset)) {
+    throw new RangeError("assetPreset must be either \"code\" or \"vite\"");
+  }
+  if (assetPattern !== undefined && !(assetPattern instanceof RegExp)) {
     throw new TypeError("assetPattern must be a regular expression");
+  }
+  if (
+    Object.hasOwn(options, "assetPattern")
+    && Object.hasOwn(options, "assetPreset")
+  ) {
+    throw new TypeError("assetPattern and assetPreset are mutually exclusive");
   }
   if (typeof dryRun !== "boolean") {
     throw new TypeError("dryRun must be a boolean");
   }
+  if (typeof lock !== "boolean") {
+    throw new TypeError("lock must be a boolean");
+  }
+  if (
+    typeof lockPath !== "string"
+    || lockPath.length === 0
+  ) {
+    throw new TypeError("lockPath must be a non-empty string");
+  }
+  if (!Number.isFinite(lockStaleMs) || lockStaleMs <= 0) {
+    throw new RangeError("lockStaleMs must be a positive finite number");
+  }
+  if (onEvent !== undefined && typeof onEvent !== "function") {
+    throw new TypeError("onEvent must be a function");
+  }
+
+  const resolvedAssetPattern = assetPattern ?? ASSET_PATTERNS[assetPreset];
+  const assetPolicy = assetPattern ? "custom" : assetPreset;
+  const emit = (event) => {
+    try {
+      onEvent?.(Object.freeze(event));
+    } catch {
+      // Telemetry must never change retention behavior.
+    }
+  };
 
   const lexicalRoot = path.resolve(distDirectory);
   const realRoot = await fs.realpath(lexicalRoot);
@@ -290,9 +483,20 @@ export const retainBuildAssets = async (options = {}) => {
     candidate: assetsDirectory,
     label: "assetsDirectory",
   });
+  const safeLockPath = await assertContainedPath({
+    lexicalRoot,
+    realRoot,
+    candidate: lockPath,
+    label: "lockPath",
+  });
+  if (
+    safeLockPath === safeHistoryDirectory
+    || !isPathInside(safeHistoryDirectory, safeLockPath)
+  ) {
+    throw new RangeError("lockPath must stay within historyDirectory");
+  }
   const safeAssetsBase = normalizeAssetsBase(assetsBase);
 
-  const safeHistoryLimit = historyLimit;
   const currentAssets = collectManifestAssets(await readJson(safeManifestPath));
   if (currentAssets.size === 0) {
     throw new TypeError("manifest must contain at least one emitted asset");
@@ -302,70 +506,141 @@ export const retainBuildAssets = async (options = {}) => {
     realRoot,
     assets: currentAssets,
   });
-  const existingNames = await listHistoryNames(safeHistoryDirectory);
-  const prospectiveName = nextHistoryName(nowMs, existingNames);
-  const existingRetainedNames = existingNames.slice(0, safeHistoryLimit - 1);
-  const retainedNames = [prospectiveName, ...existingRetainedNames];
-  const protectedAssets = await loadHistoryAssets(
-    safeHistoryDirectory,
-    existingRetainedNames,
-  );
-  currentAssets.forEach((asset) => protectedAssets.add(asset));
 
-  const cutoffMs = nowMs - gracePeriodMs;
-  const removableCandidates = [];
-  for (const relativeWithinAssets of await walkFiles(safeAssetsDirectory)) {
-    const previousLastIndex = assetPattern.lastIndex;
-    let matches;
-    try {
-      assetPattern.lastIndex = 0;
-      matches = assetPattern.test(relativeWithinAssets);
-    } finally {
-      assetPattern.lastIndex = previousLastIndex;
-    }
-    if (!matches) continue;
-    const manifestRelative = path.posix.join(
-      safeAssetsBase,
-      relativeWithinAssets,
-    );
-    if (protectedAssets.has(manifestRelative)) continue;
-    const absolutePath = path.join(safeAssetsDirectory, relativeWithinAssets);
-    const stat = await fs.stat(absolutePath);
-    if (stat.mtimeMs < cutoffMs) {
-      removableCandidates.push({
-        absolutePath,
-        manifestRelative,
-      });
-    }
-  }
-  removableCandidates.sort((left, right) => (
-    compareText(left.manifestRelative, right.manifestRelative)
-  ));
-  const removable = removableCandidates.map(
-    (candidate) => candidate.manifestRelative,
-  );
-
-  if (!dryRun) {
-    await writeHistory({
-      historyDirectory: safeHistoryDirectory,
-      name: prospectiveName,
+  const executeRetention = async () => {
+    const existingNames = await listHistoryNames(safeHistoryDirectory);
+    const prospectiveName = nextHistoryName(nowMs, existingNames);
+    const existingRetainedNames = existingNames.slice(0, historyLimit - 1);
+    const retainedNames = [prospectiveName, ...existingRetainedNames];
+    const loadedHistory = await loadHistory(
+      safeHistoryDirectory,
+      existingRetainedNames,
       nowMs,
-      assets: currentAssets,
-    });
-    for (const name of existingNames) {
-      if (!retainedNames.includes(name)) {
-        await fs.rm(path.join(safeHistoryDirectory, name), { force: true });
+    );
+    const protectedAssets = loadedHistory.assets;
+    currentAssets.forEach((asset) => protectedAssets.add(asset));
+    const retainedGenerations = [
+      {
+        historyFile: prospectiveName,
+        createdAt: new Date(nowMs).toISOString(),
+        ageMs: 0,
+        assetCount: currentAssets.size,
+        current: true,
+      },
+      ...loadedHistory.generations,
+    ];
+
+    const cutoffMs = nowMs - gracePeriodMs;
+    const removableCandidates = [];
+    for (const relativeWithinAssets of await walkFiles(safeAssetsDirectory)) {
+      if (!matchesAssetPattern(resolvedAssetPattern, relativeWithinAssets)) {
+        continue;
+      }
+      const manifestRelative = path.posix.join(
+        safeAssetsBase,
+        relativeWithinAssets,
+      );
+      if (isProtectedAsset(protectedAssets, manifestRelative)) continue;
+      const absolutePath = path.join(
+        safeAssetsDirectory,
+        relativeWithinAssets,
+      );
+      const stat = await fs.stat(absolutePath);
+      if (stat.mtimeMs < cutoffMs) {
+        removableCandidates.push({
+          absolutePath,
+          manifestRelative,
+          sizeBytes: stat.size,
+          ageMs: Math.max(0, nowMs - stat.mtimeMs),
+        });
       }
     }
-    for (const candidate of removableCandidates) {
-      await fs.rm(candidate.absolutePath, { force: true });
-    }
-  }
+    removableCandidates.sort((left, right) => (
+      compareText(left.manifestRelative, right.manifestRelative)
+    ));
+    const removable = removableCandidates.map(
+      (candidate) => candidate.manifestRelative,
+    );
+    const removableBytes = removableCandidates.reduce(
+      (total, candidate) => total + candidate.sizeBytes,
+      0,
+    );
+    const oldestRemovableAgeMs = removableCandidates.length > 0
+      ? Math.max(...removableCandidates.map((candidate) => candidate.ageMs))
+      : null;
 
-  return {
-    currentAssets: [...currentAssets].sort(),
-    retainedHistoryCount: retainedNames.length,
-    removable,
-    dryRun,
+    emit({
+      type: "planned",
+      assetPolicy,
+      currentAssetCount: currentAssets.size,
+      retainedGenerations,
+      removableAssetCount: removable.length,
+      removableBytes,
+      oldestRemovableAgeMs,
+      dryRun,
+    });
+
+    if (!dryRun) {
+      await writeHistory({
+        historyDirectory: safeHistoryDirectory,
+        name: prospectiveName,
+        nowMs,
+        assets: currentAssets,
+      });
+      for (const name of existingNames) {
+        if (!retainedNames.includes(name)) {
+          await fs.rm(path.join(safeHistoryDirectory, name), { force: true });
+        }
+      }
+      for (const candidate of removableCandidates) {
+        await fs.rm(candidate.absolutePath, { force: true });
+        emit({
+          type: "asset-removed",
+          asset: candidate.manifestRelative,
+          sizeBytes: candidate.sizeBytes,
+          ageMs: candidate.ageMs,
+        });
+      }
+    }
+
+    const result = {
+      currentAssets: [...currentAssets].sort(),
+      retainedHistoryCount: retainedNames.length,
+      retainedGenerations,
+      removable,
+      removableBytes,
+      oldestRemovableAgeMs,
+      assetPolicy,
+      dryRun,
+    };
+    emit({
+      type: "completed",
+      assetPolicy,
+      removedAssetCount: dryRun ? 0 : removable.length,
+      removedBytes: dryRun ? 0 : removableBytes,
+      dryRun,
+    });
+    return result;
   };
+
+  if (dryRun || !lock) return executeRetention();
+
+  const retentionLock = await acquireRetentionLock({
+    lockPath: safeLockPath,
+    lockStaleMs,
+    realRoot,
+  });
+  emit({
+    type: "lock-acquired",
+    lockPath: safeLockPath,
+  });
+  try {
+    return await executeRetention();
+  } finally {
+    await retentionLock.release();
+    emit({
+      type: "lock-released",
+      lockPath: safeLockPath,
+    });
+  }
 };

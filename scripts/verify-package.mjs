@@ -121,6 +121,7 @@ try {
         "installViteRecovery",
         "isDynamicImportFailure",
         "resolvePathInside",
+        "RetentionLockError",
         "retainBuildAssets",
         "wrapDynamicImport"
       ];
@@ -141,6 +142,11 @@ try {
       }
       if (!root.cacheControlForRequest("/data.json?v=1").includes("immutable")) {
         process.exit(7);
+      }
+      if (root.cacheControlForRequest("/data.json?v=session", {
+        versionPattern: /^[a-f0-9]{8}$/
+      }).includes("immutable")) {
+        process.exit(8);
       }
     `,
   );

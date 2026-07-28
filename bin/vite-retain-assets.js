@@ -15,6 +15,8 @@ Options:
   --history-dir <path>     History directory, relative to dist by default
   --history-limit <count>  Number of manifest generations to retain (default: 5)
   --grace-hours <hours>    Minimum asset age before deletion (default: 24)
+  --asset-preset <name>    Deletion candidates: code or vite (default: code)
+  --lock-stale-minutes <n> Reclaim a stale retention lock (default: 60)
   --dry-run                Report changes without writing or deleting
   --help                   Show this help
 `;
@@ -64,6 +66,13 @@ const parseArguments = (argumentsList) => {
       const hours = Number(valueAfter(argumentsList, index, argument));
       options.gracePeriodMs = hours * 60 * 60 * 1_000;
       index += 1;
+    } else if (argument === "--asset-preset") {
+      options.assetPreset = valueAfter(argumentsList, index, argument);
+      index += 1;
+    } else if (argument === "--lock-stale-minutes") {
+      const minutes = Number(valueAfter(argumentsList, index, argument));
+      options.lockStaleMs = minutes * 60 * 1_000;
+      index += 1;
     } else {
       throw new TypeError(`unknown option: ${argument}`);
     }
@@ -85,7 +94,11 @@ try {
       distDirectory: parsed.options.distDirectory,
       currentAssetCount: result.currentAssets.length,
       retainedHistoryCount: result.retainedHistoryCount,
+      retainedGenerations: result.retainedGenerations,
       removable: result.removable,
+      removableBytes: result.removableBytes,
+      oldestRemovableAgeMs: result.oldestRemovableAgeMs,
+      assetPolicy: result.assetPolicy,
       dryRun: result.dryRun,
     }, null, 2)}\n`);
   }
