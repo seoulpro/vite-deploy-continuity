@@ -76,12 +76,25 @@ vite-retain-assets \
   --dist dist \
   --history-limit 5 \
   --grace-hours 24
+
+# Opt in to pruning the broader Vite asset set:
+vite-retain-assets --dist dist --asset-preset vite --dry-run
 ```
 
 By default, deletion is deliberately limited to JavaScript and CSS filenames
-with an eight-character-or-longer generated suffix. Programmatic callers can
-supply a different `assetPattern`. The default manifest path is
-`dist/.vite/manifest.json`, matching current Vite output.
+with an eight-character-or-longer generated suffix (the `code` preset). The
+opt-in `--asset-preset vite` also prunes hash-suffixed images, fonts, JSON,
+WebAssembly, source maps, media, and their `.br`/`.gz` siblings; programmatic
+callers can instead supply a custom `assetPattern` (mutually exclusive with a
+preset). The default manifest path is `dist/.vite/manifest.json`, matching
+current Vite output.
+
+A mutating run takes a default cross-process lock in the history directory, so a
+second run for the same directory fails fast instead of racing; dry runs stay
+write-free and take no lock. The result fields and an optional `onEvent`
+callback expose retained generations, removable bytes and ages, and — for
+browser recovery — reload and suppression decisions; see the
+[API reference](./docs/api.md).
 
 Custom Vite layouts can set `--manifest`, `--assets-dir`, `--assets-base`, and
 `--history-dir`. Relative file-system paths are resolved under `--dist`;
@@ -120,7 +133,9 @@ The static module provides:
 - selection of `.br` or `.gz` siblings only when they are at least as fresh as
   the original, honoring the client's encoding quality preference while
   leaving range requests to the downstream server;
-- immutable caching for URLs carrying a version parameter;
+- immutable caching for versioned URLs — by default any non-empty version
+  parameter, or a `versionPattern`/`isVersioned` validator for stricter
+  classification;
 - a Connect/Express-compatible precompressed middleware that does not depend
   on Express itself.
 
@@ -134,11 +149,16 @@ const app = express();
 app.use(createPrecompressedMiddleware({
   rootDirectory: "/srv/app/dist",
   cacheControl: {
-    versionParameter: "v"
+    // Mark ?v= immutable only when it is a real content hash, rather than
+    // trusting any non-empty value (the compatibility default).
+    versionPattern: /^[a-f0-9]{8,}$/
   }
 }));
 app.use(express.static("/srv/app/dist"));
 ```
+
+Prefer `versionPattern` (or an `isVersioned(url)` predicate) so only genuinely
+versioned requests receive the year-long immutable policy.
 
 The middleware recognizes common Vite assets (`.js`, `.mjs`, `.css`, `.json`,
 `.map`, `.svg`, `.txt`, `.xml`, and WebAssembly) by default. It sets the
@@ -171,6 +191,13 @@ option.
 ```sh
 npm ci
 npm run verify
+```
+
+The real-browser end-to-end suite is separate from `npm run verify`:
+
+```sh
+npx playwright install chromium
+npm run test:e2e
 ```
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for safety invariants and test

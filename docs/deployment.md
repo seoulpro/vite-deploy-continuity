@@ -15,7 +15,8 @@ Confirm the fit before wiring this into a pipeline:
       later prune old generations.
 - [ ] HTML is served with `Cache-Control: no-cache` and assets are immutable and
       content-hashed.
-- [ ] Only one retention process runs per distribution directory.
+- [ ] Retention runs do not overlap for a directory. The built-in lock enforces
+      this by default; leave `lock` enabled unless you already serialize runs.
 
 If most boxes are unchecked — for example an immutable per-deployment origin, a
 host that already keeps every referenced generation, or a pipeline that never
@@ -57,25 +58,38 @@ when caches are short and sessions are brief.
 
 ## Scope and boundaries
 
-- **Default deletion is narrow on purpose.** Only generated `.js` and `.css`
-  files are eligible for deletion. Other emitted asset types — images, fonts,
-  JSON, WebAssembly, source maps — are never pruned by default, so they can
-  accumulate. Removing them requires an explicitly reviewed custom
-  `assetPattern`; widen it deliberately and test it against a dry run, because
-  the pattern is the last guard against deleting a still-referenced file.
-- **One retention process per directory.** History writes are atomic, but the
-  package provides no cross-process lock. Serialize retention so two deploys do
-  not prune the same distribution directory at once.
+- **Default deletion is narrow on purpose.** The default `code` preset makes
+  only generated `.js` and `.css` files eligible for deletion. Other emitted
+  asset types — images, fonts, JSON, WebAssembly, source maps, media — are not
+  pruned by default, so they can accumulate. The opt-in `vite` preset
+  (`--asset-preset vite`) extends eligibility to hash-suffixed Vite assets of
+  those kinds and their `.br`/`.gz` siblings; it does not claim to cover every
+  plugin output. A custom `assetPattern` remains the escape hatch for unusual
+  output. Current, retained, and unhashed assets stay protected under every
+  policy, but always review a `--dry-run` before broadening deletion, because
+  the policy is the last guard against deleting a still-referenced file.
+- **Retention is serialized by a lock, not made atomic.** A mutating run holds
+  `<historyDirectory>/.retention.lock`; a concurrent run fails fast with
+  `RetentionLockError` (`code: ERR_RETENTION_LOCKED`). Keep `lock` enabled (the
+  default) unless you already serialize runs yourself. The lock guards retention
+  processes for one directory only — it does not serialize your upload or HTML
+  publication and does not make the multi-step deployment atomic, so still avoid
+  overlapping external deploy steps. `lockStaleMs` (`--lock-stale-minutes`)
+  defaults to one hour; with no heartbeat, a lock file older than that is
+  reclaimed, so set it longer than the longest legitimate retention run to
+  avoid reclaiming a live one.
 - **Service workers are a separate cache generation.** A service worker adds its
   own precache and update lifecycle on top of HTTP caches. This package does not
   manage service workers; stage and test the worker's update and skip-waiting
   behavior as part of the application so it does not pin clients to assets this
   package has pruned.
-- **`?v=` must identify immutable content.** The static cache helper treats a
-  request as immutable when the configured version parameter (`v` by default)
-  carries any non-empty value, sending `max-age=31536000, immutable`. Use it
-  only for a value that changes whenever the bytes change — a content hash or
-  build id — never for arbitrary request state such as a session or tracking
+- **Classify immutable requests deliberately.** By default the static cache
+  helper treats a request as immutable when the configured version parameter
+  (`v` by default) carries any non-empty value, sending
+  `max-age=31536000, immutable`. That compatibility default trusts any non-empty
+  value, so prefer a `versionPattern` (matching only real content hashes or
+  build ids) or an `isVersioned(url)` predicate to enforce it. Never mark a
+  request immutable from arbitrary request state such as a session or tracking
   token, which would cache stale or wrong content for a year.
 
 ## Build
@@ -109,11 +123,15 @@ Use this order:
 Do not clear the destination before uploading. Retention needs old assets to
 remain present until both the generation and grace windows expire.
 
-Run only one retention process for a distribution directory at a time. History
-writes are atomic, but the package does not provide a cross-process deployment
-lock.
+By default a mutating retention run serializes itself: it holds
+`<historyDirectory>/.retention.lock`, and a concurrent run fails fast with
+`RetentionLockError` (`code: ERR_RETENTION_LOCKED`). This guards one
+distribution directory against overlapping retention, but it does not serialize
+your upload or HTML publication step, so keep external deploy steps from
+overlapping too. Pass `lock: false` (programmatic) only when you already
+serialize runs.
 
-For a custom Vite layout:
+For a custom Vite layout, and to prune the broader `vite` asset set:
 
 ```sh
 vite-retain-assets \
@@ -124,13 +142,33 @@ vite-retain-assets \
   --history-dir .deploy-history \
   --history-limit 5 \
   --grace-hours 24 \
+  --asset-preset vite \
   --dry-run
 ```
+
+`--asset-preset vite` widens deletion to hash-suffixed Vite assets (images,
+fonts, JSON, WebAssembly, source maps, media, and their `.br`/`.gz` siblings)
+while still protecting current, retained, and unhashed files and honoring the
+grace window; a compressed sibling stays protected while its manifest-listed
+original is. It does not cover every plugin output — programmatic callers can
+use a custom `assetPattern` when an emitted name does not fit a preset. Review
+the dry run before dropping `--dry-run`.
 
 Relative paths are resolved under the distribution directory, and absolute
 paths must remain within it. The retention API rejects lexical or symbolic-link
 escapes, an empty manifest, and missing current assets rather than treating
 every old asset as unreferenced.
+
+## Observe retention in production
+
+`retainBuildAssets` returns `retainedGenerations`, `removableBytes`, and
+`oldestRemovableAgeMs` alongside the deletion list, which is enough to alert on
+runaway growth or an unexpectedly large prune. For step-by-step telemetry, pass
+an `onEvent` callback: it reports lock acquisition/release, the `planned` set,
+each `asset-removed`, and a `completed` summary. Callback exceptions are
+swallowed, so instrumentation can never change what retention does. The browser
+`onEvent` mirrors this for `reload` and `suppressed` recovery decisions. See the
+[API reference](./api.md) for the exact fields.
 
 ## Recover open browser sessions
 
