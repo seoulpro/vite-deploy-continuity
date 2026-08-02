@@ -1,7 +1,7 @@
 {
   "name": "vite-deploy-continuity",
   "version": "0.2.0",
-  "description": "Keep stale Vite sessions working across static deployments.",
+  "description": "Keeps open tabs working after redeploys by retaining prior Vite assets and recovering stale dynamic imports.",
   "type": "module",
   "sideEffects": false,
   "types": "./src/index.d.ts",
@@ -52,10 +52,16 @@
   },
   "keywords": [
     "vite",
+    "dynamic-import",
+    "code-splitting",
+    "chunk-loading",
     "deployment",
-    "chunks",
-    "cache",
-    "dynamic-import"
+    "static-hosting",
+    "asset-versioning",
+    "cache-busting",
+    "precompressed-assets",
+    "spa",
+    "frontend-tooling"
   ],
   "engines": {
     "node": ">=22"

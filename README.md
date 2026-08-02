@@ -1,18 +1,21 @@
 # vite-deploy-continuity
 
-Keep already-open Vite applications working while a new static build is
-deployed.
+When a Vite app is redeployed, tabs that were opened before the deploy still point at the
+old build. The next lazy route or component they request is a chunk that is no longer on
+the server, and the browser reports `Failed to fetch dynamically imported module`. What
+the user sees is a blank panel, a navigation that does nothing, or a hard error page —
+not because the code is wrong, but because the tab and the server disagree about which
+build is current.
 
-Content-hashed chunks are excellent cache keys, but they create version skew:
-an old browser tab may request a lazy chunk that the newest deployment has
-already deleted. A reliable response needs three cooperating layers:
+vite-deploy-continuity treats that window of version skew as a deployment concern rather
+than a client-side bug. It retains the previous build's assets alongside the new one so a
+stale tab can still fetch the chunks it was compiled against, recovers a failed dynamic
+import once by reloading against the current build instead of surfacing the error, and
+serves versioned and precompressed assets with headers that stay coherent while both
+builds are reachable.
 
-1. retain a bounded number of prior build assets;
-2. reload once when Vite reports a stale dynamic import;
-3. serve versioned and precompressed assets with coherent headers.
-
-This package provides those layers without requiring a hosting vendor or web
-framework.
+It does not manage releases, replace your router or error boundaries, or keep an
+unbounded history of old builds alive.
 
 ## Is this for you?
 
@@ -207,6 +210,15 @@ expectations. Report vulnerabilities as described in
 ## Changelog
 
 Release history is documented in [CHANGELOG.md](./CHANGELOG.md).
+
+## Related projects
+
+- [express-static-l10n](https://github.com/seoulpro/express-static-l10n) — a request-time
+  layer over already-built static output.
+- [playwright-render-contract](https://github.com/seoulpro/playwright-render-contract) —
+  checking that a deployed page actually became usable, not just that it responded.
+- [render-handoff-contract](https://github.com/seoulpro/render-handoff-contract) —
+  continuity rules for a different transition: swapping renderers mid-view.
 
 ## License
 
