@@ -77,11 +77,11 @@
   "homepage": "https://github.com/seoulpro/vite-deploy-continuity#readme",
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",
-    "@playwright/test": "1.62.0",
-    "@types/node": "24.10.1",
-    "publint": "0.3.22",
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.1.2",
+    "publint": "0.3.23",
     "typescript": "7.0.2",
-    "vite": "8.1.5"
+    "vite": "8.2.1"
   },
   "license": "MIT"
 }
