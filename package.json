@@ -66,7 +66,7 @@
   "engines": {
     "node": ">=22"
   },
-  "author": "seoulpro <lim@limsumin.com>",
+  "author": "Sumin Lim <lim@limsumin.com> (https://limsumin.com)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/seoulpro/vite-deploy-continuity.git"
